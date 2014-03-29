@@ -32,7 +32,7 @@ Suggests:
     TxDb.Hsapiens.UCSC.hg19.knownGene,
     biovizBase,
     RColorBrewer,
-	BiocStyle
+    BiocStyle
 VignetteBuilder: knitr
 Description: Fast differential expression analysis of RNA-seq data at base-pair
     resolution
