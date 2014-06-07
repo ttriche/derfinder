@@ -2,12 +2,12 @@
 #'
 #' This is a major wrapper for running several key functions from this package. 
 #' It is meant to be used after \link{loadCoverage} has been used for a 
-#' specific chromosome. The steps run include \link{makeModels}, #' 
+#' specific chromosome. The steps run include \link{makeModels}, 
 #' \link{preprocessCoverage}, \link{calculateStats}, \link{calculatePvalues} 
 #' and \link[bumphunter]{annotateNearest}. 
 #' 
-#' @param chrnum Used for naming the output files when \code{writeOutput=TRUE} 
-#' and for \link[bumphunter]{annotateNearest}. Use '21' instead of 'chr21'.
+#' @param chr Used for naming the output files when \code{writeOutput=TRUE} 
+#' and for \link[bumphunter]{annotateNearest}.
 #' @param coverageInfo The output from \link{loadCoverage}.
 #' @param models The output from \link{makeModels}.
 #' @param cutoffPre This argument is passed to \link{preprocessCoverage} 
@@ -37,6 +37,8 @@
 #' now.
 #' @param mc.cores This argument is passed to \link{preprocessCoverage} (useful 
 #' if \code{chunksize=NULL}), \link{calculateStats} and \link{calculatePvalues}.
+#' @param mc.outfile This argument is passed to \link[BiocParallel]{SnowParam} 
+#' to specify the \code{outfile} for any output from the workers.
 #' @param writeOutput If \code{TRUE}, output Rdata files are created at each 
 #' step inside a directory with the chromosome name (example: 'chr21' if 
 #' \code{chrnum='21'}). One Rdata files is created for each component described 
@@ -47,6 +49,10 @@
 #' run. Otherwise this step is skipped.
 #' @param lowMemDir The directory where the processed chunks are saved when 
 #' using \link{preprocessCoverage} with a specified \code{lowMemDir}.
+#' @param method This argument is passed to \link{fstats.apply}. Check the 
+#' details there for more information.
+#' @param chrsStyle The naming style of the chromosomes. By default, UCSC. See 
+#' \link[GenomeInfoDb]{seqlevelsStyle}.
 #' @param verbose If \code{TRUE} basic status updates will be printed along the 
 #' way.
 #'
@@ -69,6 +75,7 @@
 #' @export
 #' @importMethodsFrom IRanges as.numeric
 #' @importFrom bumphunter annotateNearest
+#' @importFrom GenomeInfoDb mapSeqlevels
 #' 
 #' @examples
 #' ## Collapse the coverage information
@@ -85,23 +92,29 @@
 #' models <- makeModels(sampleDepths, testvars=group, adjustvars=adjustvars)
 #'
 #' ## Analyze the chromosome
-#' results <- analyzeChr(chrnum='21', coverageInfo=genomeData, models=models, 
+#' results <- analyzeChr(chr='21', coverageInfo=genomeData, models=models, 
 #'     cutoffFstat=1, cutoffType='manual', groupInfo=group, mc.cores=1, 
-#'     writeOutput=FALSE, returnOutput=TRUE)
+#'     writeOutput=FALSE, returnOutput=TRUE, method='regular')
 #' names(results)
 
-analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5, 
+analyzeChr <- function(chr, coverageInfo, models, cutoffPre = 5, 
     colsubset = NULL, scalefac = 32, chunksize = NULL, adjustF = 0, 
     cutoffFstat = 1e-08, cutoffType = "theoretical", nPermute = 1, 
     seeds = as.integer(gsub("-", "", Sys.Date())) + seq_len(nPermute), 
     maxRegionGap = 0L, maxClusterGap = 300L, groupInfo, subject = "hg19", 
-    mc.cores = getOption("mc.cores", 2L), writeOutput = TRUE, 
-    returnOutput = FALSE, runAnnotation = TRUE, lowMemDir = NULL, 
-    verbose = TRUE) {
+    mc.cores = getOption("mc.cores", 1L),
+    mc.outfile = Sys.getenv('SGE_STDERR_PATH'), writeOutput = TRUE, 
+    returnOutput = FALSE, runAnnotation = TRUE, lowMemDir = NULL,
+    method = 'Matrix', chrsStyle = "UCSC", verbose = TRUE) {
+        
+    ## Run some checks
     stopifnot(length(intersect(cutoffType, c("empirical", "theoretical", 
         "manual"))) == 1)
     stopifnot(is.factor(groupInfo))
-    chr <- paste0("chr", chrnum)
+    
+    ## Use UCSC names by default
+    chr <- mapSeqlevels(chr, chrsStyle)
+    
     ## Begin timing
     timeinfo <- NULL
     ## Init
@@ -113,10 +126,11 @@ analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5,
     ## Save parameters used for running calculateStats
     optionsStats <- list(models = models, cutoffPre = cutoffPre, 
         colsubset = colsubset, scalefac = scalefac, chunksize = chunksize, 
-        cutoffFstat = cutoffFstat, cutoffType = cutoffType, nPermute = nPermute, 
-        seeds = seeds, maxRegionGap = maxRegionGap,
+        cutoffFstat = cutoffFstat, cutoffType = cutoffType, 
+        nPermute = nPermute, seeds = seeds, maxRegionGap = maxRegionGap,
         maxClusterGap = maxClusterGap, groupInfo = groupInfo, adjustF = adjustF,
-        lowMemDir = lowMemDir, analyzeCall = match.call())
+        lowMemDir = lowMemDir, method = method, chrsStyle = chrsStyle, 
+        analyzeCall = match.call())
     
     ## Setup
     timeinfo <- c(timeinfo, list(Sys.time()))
@@ -138,7 +152,6 @@ analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5,
         scalefac = scalefac, chunksize = chunksize, mc.cores = mc.cores,
         lowMemDir = lowMemDir, verbose = verbose)
     rm(coverageInfo)
-    gc()
     
     ## prepData
     timeinfo <- c(timeinfo, list(Sys.time()))
@@ -154,7 +167,8 @@ analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5,
     if (verbose) 
         message(paste(Sys.time(), "analyzeChr: Calculating statistics"))
     fstats <- calculateStats(coveragePrep = prep, models = models, 
-        mc.cores = mc.cores, adjustF = adjustF, lowMemDir = lowMemDir, 
+        mc.cores = mc.cores, mc.outfile = mc.outfile, adjustF = adjustF,
+        lowMemDir = lowMemDir, method = method, scalefac = scalefac, 
         verbose = verbose)
     
     ## calculateStats
@@ -174,7 +188,11 @@ analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5,
     
     ## Choose the cutoff
     if (cutoffType == "empirical") {
-        cutoff <- quantile(as.numeric(fstats), 0.99)
+        if(cutoffFstat == 1e-08) {
+            cutoffFstat <- 0.99
+            warning("Switching 'cutoffFstat' to 0.99 as the user probably forgot to change its default value.")
+        }
+        cutoff <- quantile(as.numeric(fstats), cutoffFstat)
     } else if (cutoffType == "theoretical") {
         n <- dim(models$mod)[1]
         df1 <- dim(models$mod)[2]
@@ -191,11 +209,11 @@ analyzeChr <- function(chrnum, coverageInfo, models, cutoffPre = 5,
     regions <- calculatePvalues(coveragePrep = prep, models = models, 
         fstats = fstats, nPermute = nPermute, seeds = seeds, 
         chr = chr, maxRegionGap = maxRegionGap, maxClusterGap = maxClusterGap, 
-        cutoff = cutoff, mc.cores = mc.cores, verbose = verbose, 
-        adjustF = adjustF, lowMemDir = lowMemDir)
+        cutoff = cutoff, mc.cores = mc.cores, mc.outfile = mc.outfile, 
+        verbose = verbose, adjustF = adjustF, lowMemDir = lowMemDir,
+        method = method, scalefac = scalefac, chrsStyle = chrsStyle)
     if (!returnOutput) {
         rm(prep)
-        gc()
     }
     
     ## calculatePValues

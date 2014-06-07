@@ -20,8 +20,8 @@
 #' @param chrlen The chromosome length in base pairs. If it's \code{NULL}, the 
 #' chromosome length is extracted from the BAM files.
 #' @param output If \code{NULL} then no output is saved in disk. If \code{auto} 
-#' then an automatic name is constructed (chrXCovInfo.Rdata for example). If 
-#' another character is specified, then that name is used for the output file.
+#' then an automatic name is constructed using UCSC names (chrXCovInfo.Rdata
+#' for example). If another character is specified, then that name is used for #' the output file.
 #' @param inputType Has to be either \code{bam} or \code{bigWig}. It specifies
 #' the format of the raw data files.
 #' @param isMinusStrand Use \code{TRUE} for negative strand alignments only, 
@@ -30,6 +30,11 @@
 #' @param filter This argument is passed to \link{filterData}.
 #' @param returnMean This argument is passed to \link{filterData}.
 #' @param returnCoverage This argument is passed to \link{filterData}.
+#' @param totalMapped The total number of reads mapped for each sample. 
+#' Providing this data adjusts the coverage to reads in \code{targetSize} 
+#' library prior to filtering. By default, to reads per 80 million reads.
+#' @param targetSize The target library size to adjust the coverage to. Used
+#' only when \code{totalMapped} is specified.
 #' @param verbose If \code{TRUE} basic status updates will be printed along the 
 #' way.
 #'
@@ -48,6 +53,7 @@
 #' @importFrom GenomicAlignments readGAlignmentsFromBam
 #' @importFrom IRanges IRanges RangesList
 #' @importFrom rtracklayer BigWigFileList
+#' @importFrom GenomeInfoDb mapSeqlevels
 #' @importMethodsFrom GenomicRanges coverage
 #' @importMethodsFrom Rsamtools names
 #' @importMethodsFrom rtracklayer import import.bw
@@ -80,9 +86,10 @@
 #' print(object.size(dataRaw), units='Kb')
 #' }
 
-loadCoverage <- function(dirs, chr, cutoff = NULL, bai = NULL, 
+loadCoverage <- function(dirs, chr, cutoff = NULL, bai = NULL,
     chrlen = NULL, output = NULL, inputType = "bam", isMinusStrand = NA,
-    filter = "one", returnMean = FALSE, returnCoverage = TRUE, verbose = TRUE) {
+    filter = "one", returnMean = FALSE, returnCoverage = TRUE,
+    totalMapped = NULL, targetSize = 80e6, verbose = TRUE) {
     stopifnot(inputType %in% c("bam", "bigWig"))
         
     ## Do the indexes exist?
@@ -146,20 +153,16 @@ loadCoverage <- function(dirs, chr, cutoff = NULL, bai = NULL,
         message(paste(Sys.time(),
             "loadCoverage: applying the cutoff to the merged data"))
     
-    res <- filterData(data = data, cutoff = cutoff, index = NULL, 
+    ## Rename the object to a name that will make more sense later
+    varname <- paste0(mapSeqlevels(chr, "UCSC"), "CovInfo")
+    assign(varname, filterData(data = data, cutoff = cutoff, index = NULL, 
         colnames = names(dirs), filter = filter, returnMean = returnMean,
-        returnCoverage = returnCoverage, verbose = verbose)
-    rm(data)
-    gc()
-    
+        returnCoverage = returnCoverage, totalMapped = totalMapped, 
+        targetSize = targetSize, verbose = verbose))
+    rm(data)    
     
     ## Save if output is specified
     if (!is.null(output)) {
-        ## Rename the object to a name that will make more sense later
-        chrnum <- gsub("chr", "", chr)
-        varname <- paste0("chr", chrnum, "CovInfo")
-        assign(varname, res)
-        
         ## Automatic output name
         if (output == "auto") {
             output <- paste0(varname, ".Rdata")
@@ -175,7 +178,7 @@ loadCoverage <- function(dirs, chr, cutoff = NULL, bai = NULL,
     }
     
     ## Done
-    return(res)
+    return(get(varname))
 } 
 
 
@@ -192,14 +195,14 @@ loadCoverage <- function(dirs, chr, cutoff = NULL, bai = NULL,
     return(output)
 }
 
-.loadCoverageBigWig <- function(x,which, chr, verbose) {
+.loadCoverageBigWig <- function(x, which, chr, verbose) {
     if (verbose) 
         message(paste(Sys.time(), "loadCoverage: loading BigWig file", 
             path(x)))
     
     ## Read the BAM file and get the coverage. Extract only the
     ## one for the chr in question.
-    output <- import(x, selection=which, as="RleList")[[chr]]
+    output <- import(x, selection = which, as = "RleList")[[chr]]
         
     ## Done
     return(output)
